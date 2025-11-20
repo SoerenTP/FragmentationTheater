@@ -157,7 +157,7 @@ function recalculateAvailableSeats() {
 ```
 
 **UI Flow:**
-1. Bruger vælger gruppestørrelse (1-12 personer)
+1. Bruger vælger gruppestørrelse (1-10 personer)
 2. Frontend beregner og viser KUN gyldige sæder
 3. Unavailable sæder er visuelt blokeret (mørkegrå)
 4. Ved afvisning vises alternative forslag direkte i beskeden
