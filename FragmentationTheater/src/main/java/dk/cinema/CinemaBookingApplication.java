@@ -26,6 +26,7 @@ public class CinemaBookingApplication {
         server.createContext("/api/reset", controller::handleReset);
         server.createContext("/api/stats", controller::handleStats);
         server.createContext("/api/available-seats", controller::handleAvailableSeats);
+        server.createContext("/api/config", controller::handleConfig);
 
         server.setExecutor(null);
         server.start();
