@@ -7,7 +7,7 @@ import java.util.*;
  * Service til håndtering af biografsædebookinger med fragmenteringsforebyggelse.
  *
  * Regler:
- * - 1 person må sidde hvor som helst
+ * - 1 person må sidde hvor som helst, MEN ikke hvis det skaber fragmentering (medmindre sidste udvej)
  * - Alle sæder i en booking skal være i samme række
  * - Grupper må ikke skabe isolerede enkeltsæder
  * - "Sidste udvej": Hvis der er ≤4 ledige sæder tilbage og man booker ≥(ledige-1), tillades det
@@ -19,19 +19,10 @@ public class BookingService {
     private int totalBookings;
     private int rejectedBookings;
 
-    /**
-     * Standard constructor - opretter 8 rækker x 8 sæder
-     */
     public BookingService() {
-        this(8, 12);
+        this(10, 13);
     }
 
-    /**
-     * Konfigurerbar constructor
-     *
-     * @param rows Antal rækker i biografsalen
-     * @param seatsPerRow Antal sæder per række
-     */
     public BookingService(int rows, int seatsPerRow) {
         this.cinemaHall = new CinemaHall(rows, seatsPerRow);
         this.bookings = new HashMap<>();
@@ -45,15 +36,9 @@ public class BookingService {
 
     /**
      * Booker sæder hvis de er tilgængelige og ikke skaber fragmentering.
-     * Alle sæder skal være i samme række.
-     *
-     * @param request BookingRequest med seatIds og customerName
-     * @return Map med success status, booking ID, eller fejlbesked
      */
     public synchronized Map<String, Object> bookSeats(BookingRequest request) {
         Map<String, Object> result = new HashMap<>();
-
-        // Validér at alle sæder eksisterer og er ledige
         List<Seat> seatsToBook = new ArrayList<>();
         Set<Integer> rows = new HashSet<>();
 
@@ -74,7 +59,6 @@ public class BookingService {
             seatsToBook.add(seat);
         }
 
-        // Tjek at alle sæder er i samme række (undtagen for 1 person)
         if (seatsToBook.size() > 1 && rows.size() > 1) {
             result.put("success", false);
             result.put("message", "Alle sæder skal være i samme række");
@@ -82,7 +66,6 @@ public class BookingService {
             return result;
         }
 
-        // Tjek at sæderne er sammenhængende i rækken
         if (seatsToBook.size() > 1) {
             List<Integer> seatNumbers = new ArrayList<>();
             for (Seat seat : seatsToBook) {
@@ -100,8 +83,21 @@ public class BookingService {
             }
         }
 
-        // REGEL 1: 1 person må sidde hvor som helst
         if (seatsToBook.size() == 1) {
+            FragmentationCheckResult fragmentationCheck = wouldCreateFragmentation(seatsToBook);
+            int totalAvailableSeats = countAvailableSeats();
+            boolean isLastResort = (totalAvailableSeats <= 4);
+
+            if (fragmentationCheck.wouldFragment && !isLastResort) {
+                rejectedBookings++;
+                result.put("success", false);
+                result.put("message", fragmentationCheck.message);
+                result.put("reason", "FRAGMENTATION_PREVENTION");
+                result.put("isolatedSeats", fragmentationCheck.isolatedSeats);
+                result.put("suggestions", getSuggestedAlternatives(seatsToBook));
+                return result;
+            }
+
             String bookingId = UUID.randomUUID().toString();
             for (Seat seat : seatsToBook) {
                 seat.book(bookingId);
@@ -115,10 +111,7 @@ public class BookingService {
             return result;
         }
 
-        // Tjek om booking ville skabe fragmentering
         FragmentationCheckResult fragmentationCheck = wouldCreateFragmentation(seatsToBook);
-
-        // REGEL 2 + 3: Tjek "sidste udvej" scenario
         int totalAvailableSeats = countAvailableSeats();
         boolean isLastResort = (totalAvailableSeats <= 4 && seatsToBook.size() >= totalAvailableSeats - 1);
 
@@ -134,7 +127,6 @@ public class BookingService {
 
         double fragmentationBefore = calculateFragmentation();
 
-        // Gennemfør booking
         String bookingId = UUID.randomUUID().toString();
         for (Seat seat : seatsToBook) {
             seat.book(bookingId);
@@ -156,31 +148,21 @@ public class BookingService {
 
     /**
      * Tjekker om en booking ville skabe isolerede enkeltsæder.
-     *
-     * En plads er isoleret hvis:
-     * - Den er ledig
-     * - Både venstre OG højre nabo er optaget/kanten
-     *
-     * @param seatsToBook Liste af sæder der skal bookes
-     * @return FragmentationCheckResult med status og isolerede sæder
      */
     private FragmentationCheckResult wouldCreateFragmentation(List<Seat> seatsToBook) {
         FragmentationCheckResult result = new FragmentationCheckResult();
         result.isolatedSeats = new ArrayList<>();
 
-        // Opret temporary set af bookede sæder
         Set<String> tempBookedIds = new HashSet<>();
         for (Seat seat : seatsToBook) {
             tempBookedIds.add(seat.getId());
         }
 
-        // Find berørte rækker
         Set<Integer> affectedRows = new HashSet<>();
         for (Seat seat : seatsToBook) {
             affectedRows.add(seat.getRow());
         }
 
-        // Tjek hver berørt række for isolerede sæder
         for (int row : affectedRows) {
             for (int s = 0; s < cinemaHall.getSeatsPerRow(); s++) {
                 Seat seat = cinemaHall.getSeat(row, s);
@@ -214,17 +196,9 @@ public class BookingService {
         return result;
     }
 
-    /**
-     * Hjælpefunktion til at tjekke om et sæde er optaget eller del af aktuel booking.
-     *
-     * @param row Række nummer
-     * @param seatNum Sæde nummer
-     * @param bookingIds Set af sæder i aktuel booking
-     * @return true hvis optaget, false hvis ledig
-     */
     private boolean isOccupiedOrInBooking(int row, int seatNum, Set<String> bookingIds) {
         if (seatNum < 0 || seatNum >= cinemaHall.getSeatsPerRow()) {
-            return true; // Kant af række = "optaget"
+            return true;
         }
 
         Seat seat = cinemaHall.getSeat(row, seatNum);
@@ -233,22 +207,16 @@ public class BookingService {
 
     /**
      * Finder alternative bookingforslag i samme række.
-     *
-     * @param requestedSeats De sæder brugeren forsøgte at booke
-     * @return Liste af forslag (max 3)
      */
     private List<String> getSuggestedAlternatives(List<Seat> requestedSeats) {
         List<String> suggestions = new ArrayList<>();
         int requestedSize = requestedSeats.size();
-
         int preferredRow = requestedSeats.get(0).getRow();
 
-        // Prøv alle mulige startpositioner
         for (int startSeat = 0; startSeat <= cinemaHall.getSeatsPerRow() - requestedSize; startSeat++) {
             boolean allAvailable = true;
             List<Seat> candidateSeats = new ArrayList<>();
 
-            // Tjek om blok er ledig
             for (int i = 0; i < requestedSize; i++) {
                 Seat seat = cinemaHall.getSeat(preferredRow, startSeat + i);
                 if (seat.isOccupied()) {
@@ -271,12 +239,7 @@ public class BookingService {
 
         return suggestions;
     }
-
-    /**
-     * Tæller antal ledige sæder i hele biografen.
-     *
-     * @return Antal ledige sæder
-     */
+    
     private int countAvailableSeats() {
         int count = 0;
         for (Seat seat : cinemaHall.getAllSeats()) {
@@ -287,28 +250,29 @@ public class BookingService {
 
     /**
      * Returnerer liste af tilgængelige sæder for en given gruppestørrelse.
-     * Denne liste bruges af frontend til at farvelægge sæder.
-     *
-     * @param partySize Antal personer der skal booke
-     * @return Liste af sæde IDs der kan bookes uden fragmentering
      */
     public List<String> getAvailableSeatsForBooking(int partySize) {
         List<String> availableSeats = new ArrayList<>();
 
-        // REGEL 1: Party size 1 kan sidde hvor som helst
         if (partySize == 1) {
             for (Seat seat : cinemaHall.getAllSeats()) {
                 if (!seat.isOccupied()) {
-                    availableSeats.add(seat.getId());
+                    List<Seat> testSelection = Arrays.asList(seat);
+                    FragmentationCheckResult check = wouldCreateFragmentation(testSelection);
+
+                    int totalAvailable = countAvailableSeats();
+                    boolean isLastResort = (totalAvailable <= 4);
+
+                    if (!check.wouldFragment || isLastResort) {
+                        availableSeats.add(seat.getId());
+                    }
                 }
             }
             return availableSeats;
         }
 
-        // For party size > 1, tjek alle mulige sammenhængende blokke
         for (int row = 0; row < cinemaHall.getRows(); row++) {
             for (int startSeat = 0; startSeat <= cinemaHall.getSeatsPerRow() - partySize; startSeat++) {
-                // Tjek om denne sammenhængende blok er ledig
                 boolean blockAvailable = true;
                 List<Seat> candidateSeats = new ArrayList<>();
 
@@ -322,15 +286,11 @@ public class BookingService {
                 }
 
                 if (blockAvailable) {
-                    // REGEL 2: Tjek om booking ville skabe problematisk fragmentering
                     FragmentationCheckResult check = wouldCreateFragmentation(candidateSeats);
-
-                    // REGEL 3: Tjek "sidste udvej" scenario
                     int totalAvailable = countAvailableSeats();
                     boolean isLastResort = (totalAvailable <= 4 && partySize >= totalAvailable - 1);
 
                     if (!check.wouldFragment || isLastResort) {
-                        // Tilføj alle sæder i denne gyldige blok
                         for (Seat seat : candidateSeats) {
                             if (!availableSeats.contains(seat.getId())) {
                                 availableSeats.add(seat.getId());
@@ -343,14 +303,7 @@ public class BookingService {
 
         return availableSeats;
     }
-
-    /**
-     * Beregner fragmenteringsprocent for hele biografen.
-     *
-     * Fragmentering = (isolerede sæder / totale ledige sæder) * 100
-     *
-     * @return Fragmenteringsprocent (0-100)
-     */
+    
     public double calculateFragmentation() {
         int isolatedSeats = 0;
         int totalEmptySeats = 0;
@@ -376,11 +329,6 @@ public class BookingService {
         return (isolatedSeats * 100.0) / totalEmptySeats;
     }
 
-    /**
-     * Beregner udnyttelsesgrad for biografen.
-     *
-     * @return Procent af optagne sæder (0-100)
-     */
     public double calculateUtilization() {
         int occupied = 0;
         int total = cinemaHall.getRows() * cinemaHall.getSeatsPerRow();
@@ -392,11 +340,6 @@ public class BookingService {
         return (occupied * 100.0) / total;
     }
 
-    /**
-     * Henter statistik for biografen.
-     *
-     * @return Map med statistik
-     */
     public Map<String, Object> getStatistics() {
         Map<String, Object> stats = new HashMap<>();
         stats.put("totalBookings", totalBookings);
@@ -414,9 +357,6 @@ public class BookingService {
         return stats;
     }
 
-    /**
-     * Nulstiller biografen til tom tilstand.
-     */
     public void reset() {
         for (Seat seat : cinemaHall.getAllSeats()) {
             seat.release();
@@ -426,9 +366,6 @@ public class BookingService {
         rejectedBookings = 0;
     }
 
-    /**
-     * Intern hjælpeklasse til at holde resultat af fragmenteringstjek.
-     */
     private static class FragmentationCheckResult {
         boolean wouldFragment = false;
         String message = "";
