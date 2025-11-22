@@ -335,7 +335,7 @@
     <div class="party-size-selector">
         <label for="partySize">Antal personer:</label>
         <select id="partySize">
-            <!-- Options will be dynamically generated based on max seats per row -->
+            <!-- Options will be dynamically generated from backend config -->
         </select>
     </div>
 
@@ -382,12 +382,32 @@
 
 <script>
     const API_URL = 'http://localhost:8080/api';
+
     let selectedSeats = new Set();
     let availableSeats = new Set();
     let currentPartySize = 2;
-    let maxSeatsPerRow = 8;
-    let totalSeats = 64;
+    let maxSeatsPerRow = 0;
+    let totalSeats = 0;
     let cinemaData = null;
+
+    async function initialize() {
+        await loadConfig();
+        await loadCinemaState();
+    }
+
+    async function loadConfig() {
+        try {
+            const response = await fetch(`${API_URL}/config`);
+            const config = await response.json();
+
+            maxSeatsPerRow = config.seatsPerRow;
+            totalSeats = config.totalSeats;
+
+            initializePartySizeDropdown();
+        } catch (error) {
+            showMessage('Fejl ved indlæsning af konfiguration. Sørg for at backend kører på port 8080.', 'error');
+        }
+    }
 
     async function loadCinemaState() {
         try {
@@ -395,15 +415,7 @@
             const data = await response.json();
             cinemaData = data;
 
-            if (data.rows && data.rows.length > 0) {
-                maxSeatsPerRow = data.rows[0].length;
-                totalSeats = data.rows.length * maxSeatsPerRow;
-
-                initializePartySizeDropdown();
-            }
-
-            recalculateAvailableSeats();
-
+            await recalculateAvailableSeats();
             renderCinema(data.rows);
             await loadStatistics();
         } catch (error) {
@@ -427,184 +439,29 @@
         }
     }
 
-    function recalculateAvailableSeats() {
+    /**
+     * SIMPLIFIED: Hent tilgængelige sæder fra backend
+     * Backend håndterer AL fragmenteringslogik
+     */
+    async function recalculateAvailableSeats() {
         if (!cinemaData || !cinemaData.rows) return;
 
-        availableSeats = new Set();
+        try {
+            // Hent tilgængelige sæder fra backend
+            const response = await fetch(`${API_URL}/available-seats?partySize=${currentPartySize}`);
+            const data = await response.json();
 
-        if (selectedSeats.size === 0) {
-            if (currentPartySize === 1) {
-                for (const row of cinemaData.rows) {
-                    for (const seat of row) {
-                        if (!seat.occupied) {
-                            availableSeats.add(seat.id);
-                        }
-                    }
-                }
-                return;
-            }
+            // Konverter til Set for hurtig lookup
+            availableSeats = new Set(data.availableSeats);
 
-            for (let rowIdx = 0; rowIdx < cinemaData.rows.length; rowIdx++) {
-                const row = cinemaData.rows[rowIdx];
-
-                for (let blockSize = 1; blockSize <= Math.min(currentPartySize, row.length); blockSize++) {
-                    for (let startSeat = 0; startSeat <= row.length - blockSize; startSeat++) {
-                        let blockAvailable = true;
-                        const candidateSeats = [];
-
-                        for (let i = 0; i < blockSize; i++) {
-                            const seat = row[startSeat + i];
-                            if (seat.occupied) {
-                                blockAvailable = false;
-                                break;
-                            }
-                            candidateSeats.push(seat);
-                        }
-
-                        if (blockAvailable && !wouldCauseFragmentation(candidateSeats, row, rowIdx)) {
-                            for (const seat of candidateSeats) {
-                                availableSeats.add(seat.id);
-                            }
-                        }
-                    }
-                }
-            }
-            return;
-        }
-
-        const seatsNeeded = currentPartySize - selectedSeats.size;
-
-        if (seatsNeeded === 0) {
+            // Hvis der er valgte sæder, behold dem som tilgængelige (for deselection)
             for (const seatId of selectedSeats) {
                 availableSeats.add(seatId);
             }
-            return;
+        } catch (error) {
+            console.error('Error loading available seats:', error);
+            availableSeats = new Set();
         }
-
-        // Get the row of the first selected seat
-        let selectedRow = null;
-        for (const row of cinemaData.rows) {
-            for (const seat of row) {
-                if (selectedSeats.has(seat.id)) {
-                    selectedRow = seat.row;
-                    break;
-                }
-            }
-            if (selectedRow !== null) break;
-        }
-
-        if (selectedRow === null) return;
-
-        const row = cinemaData.rows[selectedRow];
-        const selectedInRow = [];
-
-        for (const seat of row) {
-            if (selectedSeats.has(seat.id)) {
-                selectedInRow.push(seat);
-            }
-        }
-
-        selectedInRow.sort((a, b) => a.number - b.number);
-
-        const seatNumbers = selectedInRow.map(s => s.number);
-        const minSeat = Math.min(...seatNumbers);
-        const maxSeat = Math.max(...seatNumbers);
-
-        let isContiguous = true;
-        for (let i = 0; i < seatNumbers.length - 1; i++) {
-            if (seatNumbers[i + 1] - seatNumbers[i] !== 1) {
-                isContiguous = false;
-                break;
-            }
-        }
-
-        if (!isContiguous) {
-            for (const seatId of selectedSeats) {
-                availableSeats.add(seatId);
-            }
-            return;
-        }
-
-        const wouldBookAlmostFullRow = (selectedSeats.size + seatsNeeded) >= row.length - 1;
-
-        if (minSeat > 0) {
-            for (let i = minSeat - 1; i >= Math.max(0, minSeat - seatsNeeded); i--) {
-                const seat = row[i];
-                if (seat.occupied) break;
-
-                const testSeats = [];
-                for (let j = i; j <= maxSeat; j++) {
-                    testSeats.push(row[j]);
-                }
-
-                if (wouldBookAlmostFullRow || !wouldCauseFragmentation(testSeats, row, selectedRow)) {
-                    availableSeats.add(seat.id);
-                }
-            }
-        }
-
-        if (maxSeat < row.length - 1) {
-            for (let i = maxSeat + 1; i <= Math.min(row.length - 1, maxSeat + seatsNeeded); i++) {
-                const seat = row[i];
-                if (seat.occupied) break;
-
-                const testSeats = [];
-                for (let j = minSeat; j <= i; j++) {
-                    testSeats.push(row[j]);
-                }
-
-                if (wouldBookAlmostFullRow || !wouldCauseFragmentation(testSeats, row, selectedRow)) {
-                    availableSeats.add(seat.id);
-                }
-            }
-        }
-
-        for (const seatId of selectedSeats) {
-            availableSeats.add(seatId);
-        }
-    }
-
-    function wouldCauseFragmentation(candidateSeats, row, rowIdx) {
-        if (candidateSeats.length >= row.length - 1) {
-            return false;
-        }
-
-        const tempOccupied = new Set();
-
-        for (const seat of row) {
-            if (seat.occupied) {
-                tempOccupied.add(seat.number);
-            }
-        }
-
-        for (const seat of candidateSeats) {
-            tempOccupied.add(seat.number);
-        }
-
-        for (let i = 0; i < row.length; i++) {
-            if (tempOccupied.has(i)) continue;
-
-            const leftOccupied = (i === 0) || tempOccupied.has(i - 1);
-            const rightOccupied = (i === row.length - 1) || tempOccupied.has(i + 1);
-
-            if (leftOccupied && rightOccupied) {
-                let totalAvailable = 0;
-                for (const s of cinemaData.rows) {
-                    for (const seat of s) {
-                        if (!seat.occupied) totalAvailable++;
-                    }
-                }
-
-                const totalSelected = selectedSeats.size + candidateSeats.filter(s => !selectedSeats.has(s.id)).length;
-                const isLastResort = (totalAvailable <= 4 && totalSelected >= totalAvailable - 1);
-
-                if (!isLastResort) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
 
     function renderCinema(rows) {
@@ -644,27 +501,14 @@
     }
 
     function toggleSeat(seatId) {
-        console.log('=== Toggle Seat ===');
-        console.log('Clicked:', seatId);
-        console.log('Currently selected:', Array.from(selectedSeats));
-        console.log('Party size:', currentPartySize);
-
         if (selectedSeats.has(seatId)) {
-            console.log('Deselecting seat');
             selectedSeats.delete(seatId);
-            loadCinemaState();
-            return;
-        }
-
-        if (!availableSeats.has(seatId)) {
-            console.log('Seat not available');
+        } else if (availableSeats.has(seatId)) {
+            selectedSeats.add(seatId);
+        } else {
             showMessage('Denne plads er ikke tilgængelig for din gruppestørrelse', 'error');
             return;
         }
-
-        console.log('Adding seat to selection');
-        selectedSeats.add(seatId);
-        console.log('New selection:', Array.from(selectedSeats));
 
         loadCinemaState();
     }
@@ -782,7 +626,7 @@
     document.getElementById('resetBtn').addEventListener('click', resetCinema);
     document.getElementById('partySize').addEventListener('change', onPartySizeChange);
 
-    loadCinemaState();
+    initialize();
     setInterval(loadStatistics, 5000);
 </script>
 </body>
