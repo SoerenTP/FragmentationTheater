@@ -125,6 +125,23 @@ public class BookingController {
         sendJsonResponse(exchange, 200, response.toString());
     }
 
+    public void handleConfig(HttpExchange exchange) throws IOException {
+        setCorsHeaders(exchange);
+
+        if ("OPTIONS".equals(exchange.getRequestMethod())) {
+            exchange.sendResponseHeaders(200, -1);
+            return;
+        }
+
+        CinemaHall hall = bookingService.getCinemaHall();
+        JSONObject response = new JSONObject();
+        response.put("rows", hall.getRows());
+        response.put("seatsPerRow", hall.getSeatsPerRow());
+        response.put("totalSeats", hall.getRows() * hall.getSeatsPerRow());
+
+        sendJsonResponse(exchange, 200, response.toString());
+    }
+
     private void setCorsHeaders(HttpExchange exchange) {
         exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
         exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
